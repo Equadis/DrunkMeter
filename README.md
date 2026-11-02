@@ -12,6 +12,13 @@ A lightweight Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
 - Keeps failed/cooldown drink attempts from increasing the meter.
 - Keeps only the latest 20 offline snapshots and 200 debug-log entries.
 
+## 0.6.1 fixes
+
+- Restored visible DRUNK (grey) and SMASHED (gold) marker lines using a Vanilla-safe texture.
+- White decay ticker now sweeps from the top of the full bar rather than the top of the red fill.
+- Fixed live decay/ticker freezing by accepting all common OnUpdate elapsed argument forms with a GetTime fallback.
+- Login initialisation remains one-time only.
+
 ## 0.6.0 UI redesign
 
 - Meter width reduced from 22px to 12px.
@@ -23,7 +30,7 @@ A lightweight Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
 
 ## Install
 
-Download `DrunkMeter-0.6.0.zip`, extract it, and copy the `DrunkMeter` folder into:
+Download `DrunkMeter-0.6.1.zip`, extract it, and copy the `DrunkMeter` folder into:
 
 `Interface\\AddOns\\DrunkMeter`
 
@@ -41,4 +48,4 @@ Core drink confirmation and decay run before optional nameplate scanning. Namepl
 
 Built for the WoW 1.12.1 API (`Interface: 11200`) and OctoWoW.
 
-Current version: **0.6.0**
+Current version: **0.6.1**

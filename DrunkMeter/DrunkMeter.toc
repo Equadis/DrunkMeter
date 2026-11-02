@@ -2,7 +2,7 @@
 ## Title: DrunkMeter
 ## Notes: Tracks estimated drunkenness and alcohol potency on Vanilla/OctoWoW.
 ## Author: Ollie / ChatGPT
-## Version: 0.6.0
+## Version: 0.6.1
 ## SavedVariables: DrunkMeterDB, DrunkMeterLog
 
 DrunkMeter.lua

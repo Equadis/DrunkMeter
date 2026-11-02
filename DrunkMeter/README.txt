@@ -1,4 +1,4 @@
-DrunkMeter 0.6.0
+DrunkMeter 0.6.1
 ================
 
 Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
@@ -12,6 +12,9 @@ Features
 - Value and state are displayed below the meter; drink icons and the tipsy/max markers are removed.
 - Automatically estimates decay while you are offline.
 - Nameplate correction is failure-isolated so custom nameplates cannot stop drink tracking or decay.
+- DRUNK/SMASHED threshold lines use a Vanilla-safe solid texture.
+- The white decay ticker sweeps from the top of the full bar to the bottom every 10 seconds.
+- Live decay uses multiple elapsed-time fallbacks to prevent a frozen ticker/value.
 
 Offline decay
 -------------

@@ -1,4 +1,4 @@
--- DrunkMeter 0.6.0
+-- DrunkMeter 0.6.1
 -- Vanilla WoW / Lua 5.0 compatible.
 --
 -- Tracks estimated drunkenness from drink use and shows it on a compact
@@ -7,7 +7,7 @@
 DrunkMeter = {}
 local DM = DrunkMeter
 
-DM.VERSION = "0.6.0"
+DM.VERSION = "0.6.1"
 DM.MAX_VALUE = 256
 DM.DRUNK_AT = 50
 DM.SMASHED_AT = 90
@@ -979,10 +979,11 @@ end
 
 function DM:CreateTickAtValue(v, r, g, b)
     local y = self:GetVisualOffset(v)
-    -- Threshold markers sit entirely inside the bar and span exactly its width.
+    -- Vanilla-safe solid threshold marker. WHITE8X8 is not reliable on 1.12 clients.
     local tick = self.bar:CreateTexture(nil, "OVERLAY")
-    tick:SetTexture("Interface\\Buttons\\WHITE8X8")
+    tick:SetTexture("Interface\\ChatFrame\\ChatFrameBackground")
     tick:SetVertexColor(r or 0.96, g or 0.84, b or 0.48)
+    tick:SetAlpha(1.0)
     tick:SetWidth(self.BAR_WIDTH)
     tick:SetHeight(2)
     tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)
@@ -1040,8 +1041,9 @@ function DM:UpdateDecayTicker()
     if progress < 0 then progress = 0 end
     if progress > 1 then progress = 1 end
 
-    local topY = self:GetVisualOffset(v)
-    local y = topY * (1 - progress)
+    -- The decay ticker is a clock, not a fill marker: sweep from the top of
+    -- the complete bar to the bottom every DECAY_SECONDS, regardless of fill height.
+    local y = self.BAR_HEIGHT * (1 - progress)
 
     self.decayLine:ClearAllPoints()
     self.decayLine:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)
@@ -1189,7 +1191,7 @@ function DM:CreateUI()
 
     local decayLine = bar:CreateTexture(nil, "OVERLAY")
     self.decayLine = decayLine
-    decayLine:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    decayLine:SetTexture("Interface\\ChatFrame\\ChatFrameBackground")
     decayLine:SetVertexColor(1.0, 1.0, 1.0)
     decayLine:SetWidth(self.BAR_WIDTH)
     decayLine:SetHeight(2)
@@ -1445,7 +1447,18 @@ function DM:OnUpdate(elapsed)
     -- Core tracking always runs before optional nameplate work. This keeps drink
     -- confirmation and decay alive even if a custom nameplate implementation is
     -- incompatible with the Vanilla frame scanner.
-    local dt = tonumber(elapsed) or 0
+    -- Accept the client-supplied elapsed value, but also keep a monotonic
+    -- GetTime fallback so live decay cannot freeze when an OnUpdate argument is absent.
+    local now = GetTime()
+    local dt = tonumber(elapsed)
+    if not dt or dt <= 0 then
+        if self.lastUpdateTime then
+            dt = now - self.lastUpdateTime
+        else
+            dt = 0
+        end
+    end
+    self.lastUpdateTime = now
     if dt < 0 then dt = 0 end
 
     local pendingOK, pendingErr = pcall(self.ConfirmPendingDrink, self)
@@ -1490,8 +1503,11 @@ driver:RegisterEvent("CHAT_MSG_SYSTEM")
 driver:SetScript("OnEvent", function()
     DM:OnEvent(event)
 end)
-driver:SetScript("OnUpdate", function()
-    DM:OnUpdate(arg1)
+driver:SetScript("OnUpdate", function(a, b)
+    -- Compatible with modern-style (frame, elapsed), single elapsed argument,
+    -- and legacy Vanilla global arg1 script dispatch.
+    local elapsed = tonumber(b) or tonumber(a) or tonumber(arg1)
+    DM:OnUpdate(elapsed)
 end)
 
 SLASH_DRUNKMETER1 = "/drunk"
