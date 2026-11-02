@@ -1,0 +1,77 @@
+name: Build DrunkMeter 0.6.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/redesign-0.6.0.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply UI redesign and package 0.6.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          p = Path('DrunkMeter/DrunkMeter.lua')
+          s = p.read_text()
+          s = s.replace('-- DrunkMeter 0.5.0', '-- DrunkMeter 0.6.0', 1)
+          s = s.replace('DM.VERSION = "0.5.0"', 'DM.VERSION = "0.6.0"', 1)
+          s = s.replace('DM.BAR_WIDTH = 22', 'DM.BAR_WIDTH = 12', 1)
+
+          old_icons = '''function DM:UpdateIconEmphasis(state)\n    if not self.tipsyIcon then return end\n    local tipsyAlpha = 0.55\n    local drunkAlpha = 0.55\n    local smashedAlpha = 0.55\n\n    if state == "TIPSY" then\n        tipsyAlpha = 1.0\n    elseif state == "DRUNK" then\n        drunkAlpha = 1.0\n    elseif state == "SMASHED" then\n        smashedAlpha = 1.0\n    elseif state == "SOBER" then\n        tipsyAlpha = 0.85\n        drunkAlpha = 0.85\n        smashedAlpha = 0.85\n    end\n\n    self.tipsyIcon:SetAlpha(tipsyAlpha)\n    self.drunkIcon:SetAlpha(drunkAlpha)\n    self.smashedIcon:SetAlpha(smashedAlpha)\nend\n\n'''
+          if old_icons not in s:
+              raise SystemExit('UpdateIconEmphasis block not found')
+          s = s.replace(old_icons, '', 1)
+          s = s.replace('    self:UpdateIconEmphasis(state)\n    self:UpdateDecayTicker()', '    self:UpdateDecayTicker()', 1)
+
+          tick_start = s.index('function DM:CreateTickAtValue(v)')
+          tick_end = s.index('\nfunction DM:PlayThresholdWarning', tick_start)
+          s = s[:tick_start] + '''function DM:CreateTickAtValue(v, r, g, b)\n    local y = self:GetVisualOffset(v)\n    -- Threshold markers sit entirely inside the bar and span exactly its width.\n    local tick = self.bar:CreateTexture(nil, "OVERLAY")\n    tick:SetTexture("Interface\\\\Buttons\\\\WHITE8X8")\n    tick:SetVertexColor(r or 0.96, g or 0.84, b or 0.48)\n    tick:SetWidth(self.BAR_WIDTH)\n    tick:SetHeight(2)\n    tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)\n    return tick\nend\n''' + s[tick_end:]
+
+          ui_start = s.index('function DM:CreateUI()')
+          ui_end = s.index('\nfunction DM:InitHooks()', ui_start)
+          new_ui = '''function DM:CreateUI()\n    if self.frame then return end\n\n    local f = CreateFrame("Frame", "DrunkMeterFrame", UIParent)\n    self.frame = f\n    f:SetWidth(48)\n    f:SetHeight(232)\n    f:SetPoint("CENTER", UIParent, "CENTER", 0, -120)\n    f:SetFrameStrata("MEDIUM")\n    f:SetMovable(1)\n    f:EnableMouse(1)\n    f:RegisterForDrag("LeftButton")\n\n    f:SetScript("OnDragStart", function()\n        if DrunkMeterDB and not DrunkMeterDB.locked then\n            this:StartMoving()\n        end\n    end)\n\n    f:SetScript("OnDragStop", function()\n        this:StopMovingOrSizing()\n        DM:SavePosition()\n    end)\n\n    f:SetScript("OnEnter", function() DM:ShowTrackingTooltip() end)\n    f:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)\n\n    local bar = CreateFrame("StatusBar", "DrunkMeterStatusBar", f)\n    self.bar = bar\n    bar:SetWidth(self.BAR_WIDTH)\n    bar:SetHeight(self.BAR_HEIGHT)\n    bar:SetPoint("TOP", f, "TOP", 0, -6)\n    bar:SetMinMaxValues(0, self.BAR_HEIGHT)\n    bar:SetValue(0)\n    if bar.SetOrientation then bar:SetOrientation("VERTICAL") end\n    self:ApplyNativeBarTexture()\n    bar:SetStatusBarColor(self.BAR_RED_R, self.BAR_RED_G, self.BAR_RED_B)\n    bar:SetBackdrop({\n        bgFile = "Interface\\\\Tooltips\\\\UI-Tooltip-Background",\n        edgeFile = "Interface\\\\Tooltips\\\\UI-Tooltip-Border",\n        tile = true, tileSize = 16, edgeSize = 7,\n        insets = { left = 1, right = 1, top = 1, bottom = 1 }\n    })\n    bar:SetBackdropColor(0.00, 0.02, 0.01, 0.98)\n    bar:SetBackdropBorderColor(0.68, 0.57, 0.30, 1.0)\n\n    -- Only DRUNK and SMASHED thresholds remain.\n    self.drunkTick = self:CreateTickAtValue(self.DRUNK_AT, 0.62, 0.62, 0.62)\n    self.smashedTick = self:CreateTickAtValue(self.SMASHED_AT, 0.96, 0.84, 0.48)\n\n    local valueText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")\n    self.valueText = valueText\n    valueText:SetPoint("TOP", bar, "BOTTOM", 0, -5)\n    valueText:SetText("0/256")\n    valueText:SetTextColor(1.0, 0.94, 0.78)\n    if valueText.SetJustifyH then valueText:SetJustifyH("CENTER") end\n    if valueText.SetShadowOffset then valueText:SetShadowOffset(1, -1) end\n\n    local stateText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")\n    self.stateText = stateText\n    stateText:SetPoint("TOP", valueText, "BOTTOM", 0, -1)\n    stateText:SetText("SOBER")\n    stateText:SetTextColor(0.92, 0.88, 0.76)\n    if stateText.SetJustifyH then stateText:SetJustifyH("CENTER") end\n    if stateText.SetShadowOffset then stateText:SetShadowOffset(1, -1) end\n\n    local decayGlow = bar:CreateTexture(nil, "OVERLAY")\n    self.decayGlow = decayGlow\n    decayGlow:SetTexture("Interface\\\\Tooltips\\\\UI-Tooltip-Background")\n    decayGlow:SetVertexColor(1.0, 1.0, 1.0)\n    decayGlow:SetWidth(self.BAR_WIDTH)\n    decayGlow:SetHeight(4)\n    decayGlow:SetAlpha(0.10)\n    decayGlow:Hide()\n\n    local decayLine = bar:CreateTexture(nil, "OVERLAY")\n    self.decayLine = decayLine\n    decayLine:SetTexture("Interface\\\\TargetingFrame\\\\UI-StatusBar")\n    decayLine:SetVertexColor(1.0, 1.0, 1.0)\n    decayLine:SetWidth(self.BAR_WIDTH)\n    decayLine:SetHeight(2)\n    decayLine:Hide()\n\n    -- No external nub/icons: keep the widget narrow.\n    self.decayNub = nil\nend\n'''
+          s = s[:ui_start] + new_ui + s[ui_end:]
+          p.write_text(s)
+
+          toc = Path('DrunkMeter/DrunkMeter.toc')
+          toc.write_text(toc.read_text().replace('## Version: 0.5.0', '## Version: 0.6.0'))
+
+          addon_readme = Path('DrunkMeter/README.txt')
+          r = addon_readme.read_text().replace('DrunkMeter 0.5.0', 'DrunkMeter 0.6.0', 1)
+          r = r.replace('- Uses a compact textured vertical meter with threshold warnings.', '- Uses a slim textured vertical meter with only DRUNK (grey) and SMASHED (gold) threshold lines.\n- Value and state are displayed below the meter; drink icons and the tipsy/max markers are removed.')
+          addon_readme.write_text(r)
+
+          textures = Path('DrunkMeter/Textures')
+          if textures.exists():
+              shutil.rmtree(textures)
+
+          Path('README.md').write_text('''# DrunkMeter\n\nA lightweight Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.\n\n## Features\n\n- Tracks alcohol potency and drunkenness from confirmed drink consumption.\n- Syncs state from Blizzard's sober/tipsy/drunk/smashed system messages.\n- Automatically estimates decay while offline and resumes partial decay ticks on login.\n- Corrects drunk-distorted hostile enemy levels on the target frame and visible nameplates.\n- Uses a very slim textured vertical meter with only DRUNK and SMASHED threshold markers.\n- Keeps failed/cooldown drink attempts from increasing the meter.\n- Keeps only the latest 20 offline snapshots and 200 debug-log entries.\n\n## 0.6.0 UI redesign\n\n- Meter width reduced from 22px to 12px.\n- Removed the tipsy threshold marker and max/cap marker.\n- DRUNK threshold is grey; SMASHED remains gold.\n- Threshold and decay lines span exactly the bar width.\n- Value and state now sit below the meter.\n- Removed the drink/beer icon assets from the addon package.\n\n## Install\n\nDownload `DrunkMeter-0.6.0.zip`, extract it, and copy the `DrunkMeter` folder into:\n\n`Interface\\\\AddOns\\\\DrunkMeter`\n\nThen enable **DrunkMeter** from the AddOns menu.\n\n## Offline tracking\n\nOn logout DrunkMeter stores the current value, partial 10-second decay progress and a timestamp in SavedVariables. On the next login it applies the same `-1 / 10 seconds` decay to the elapsed offline time. Server hour/minute are also stored with snapshots for diagnostics.\n\n## Nameplate safety\n\nCore drink confirmation and decay run before optional nameplate scanning. Nameplate correction is failure-isolated: if OctoWoW exposes an incompatible nameplate frame, only nameplate correction is disabled for that session; the meter continues adding drinks and ticking normally.\n\n## Compatibility\n\nBuilt for the WoW 1.12.1 API (`Interface: 11200`) and OctoWoW.\n\nCurrent version: **0.6.0**\n''')
+          PY
+
+          grep -q 'DM.VERSION = "0.6.0"' DrunkMeter/DrunkMeter.lua
+          grep -q 'DM.BAR_WIDTH = 12' DrunkMeter/DrunkMeter.lua
+          ! grep -q 'tipsyIcon' DrunkMeter/DrunkMeter.lua
+          ! grep -q 'topTick' DrunkMeter/DrunkMeter.lua
+          grep -q '## Version: 0.6.0' DrunkMeter/DrunkMeter.toc
+
+          rm -f DrunkMeter-0.5.0.zip DrunkMeter-0.6.0.zip
+          zip -qr DrunkMeter-0.6.0.zip DrunkMeter
+          rm -f RELEASE_NOTES_0.5.0.md
+          rm -f .github/workflows/redesign-0.6.0.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Redesign DrunkMeter UI for 0.6.0'
+          git push
