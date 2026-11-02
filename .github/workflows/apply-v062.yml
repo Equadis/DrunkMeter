@@ -1,0 +1,667 @@
+name: Apply DrunkMeter 0.6.2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-v062.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch 0.6.1 to 0.6.2
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('DrunkMeter/DrunkMeter.lua')
+          s = path.read_text()
+          if 'DM.VERSION = "0.6.1"' not in s:
+              raise SystemExit('Expected 0.6.1 baseline not found')
+
+          def replace_section(text, start, end, new):
+              a = text.find(start)
+              if a < 0:
+                  raise SystemExit('Missing start marker: ' + start)
+              b = text.find(end, a)
+              if b < 0:
+                  raise SystemExit('Missing end marker: ' + end)
+              return text[:a] + new.rstrip() + '\n\n' + text[b:]
+
+          s = s.replace('-- DrunkMeter 0.6.1', '-- DrunkMeter 0.6.2', 1)
+          s = s.replace('DM.VERSION = "0.6.1"', 'DM.VERSION = "0.6.2"', 1)
+          s = s.replace('DM.BAR_WIDTH = 12\nDM.BAR_HEIGHT = 196', '''-- Geometry: 32 px outer body, 28 px usable interior, 2 px inset each side.
+DM.OUTER_BAR_WIDTH = 32
+DM.BAR_WIDTH = 28
+DM.BAR_HEIGHT = 196
+DM.BAR_INSET = 2
+DM.LINE_HEIGHT = 2''', 1)
+          s = s.replace('DM.MAX_LOG_ENTRIES = 200\nDM.BAR_TEXTURE = "Interface\\\\TargetingFrame\\\\UI-StatusBar"', '''DM.MAX_LOG_ENTRIES = 200
+DM.DEBUG_TIMER_LOG_SECONDS = 5
+DM.MAX_SANE_DELTA = 300
+DM.SOLID_TEXTURE = "Interface\\\\ChatFrame\\\\ChatFrameBackground"
+DM.BAR_TEXTURE = DM.SOLID_TEXTURE''', 1)
+
+          normalise = r'''function DM:NormalisePhase(phase)
+    phase = tonumber(phase) or 0
+    if phase < 0 then phase = 0 end
+    if phase >= self.DECAY_SECONDS then
+        phase = phase - math.floor(phase / self.DECAY_SECONDS) * self.DECAY_SECONDS
+    end
+    return phase
+end
+
+function DM:ResetDecayPhase(reason)
+    local before = tonumber(self.decayElapsed) or 0
+    self.decayElapsed = 0
+    self.warningState = nil
+    if DrunkMeterDB and DrunkMeterDB.debug then
+        self:Log("timer reset | reason=" .. tostring(reason or "unspecified")
+            .. " | phase=" .. string.format("%.3f", before) .. " -> 0")
+    end
+end
+
+'''
+          anchor = 'function DM:SaveOfflineSnapshot(reason, addHistory)'
+          if 'function DM:NormalisePhase' not in s:
+              s = s.replace(anchor, normalise + anchor, 1)
+
+          old_phase = '''    local phase = tonumber(self.decayElapsed) or 0
+    if phase < 0 then phase = 0 end
+    if phase >= self.DECAY_SECONDS then phase = phase - math.floor(phase / self.DECAY_SECONDS) * self.DECAY_SECONDS end'''
+          if old_phase not in s:
+              raise SystemExit('Expected SaveOfflineSnapshot phase block not found')
+          s = s.replace(old_phase, '    local phase = self:NormalisePhase(self.decayElapsed)', 1)
+
+          restore = r'''function DM:RestoreOfflineDecay()
+    if self.offlineRecoveryApplied then return end
+    self.offlineRecoveryApplied = true
+
+    self:EnsureDB()
+    self.decayElapsed = 0
+
+    local snap = DrunkMeterDB.offlineSnapshot
+    if type(snap) ~= "table" then
+        self:Log("offline recovery | no snapshot | phase=0")
+        return
+    end
+
+    local savedEpoch = tonumber(snap.epoch)
+    local savedValue = tonumber(snap.value)
+    local now = self:GetEpochTime()
+    if not savedEpoch or not savedValue or not now then
+        self:Log("offline recovery | incomplete snapshot/time data")
+        return
+    end
+
+    savedValue = clamp(savedValue, 0, self.MAX_VALUE)
+    local savedPhase = self:NormalisePhase(snap.decayElapsed)
+    local offlineSeconds = math.floor(now - savedEpoch)
+
+    if offlineSeconds < 0 then
+        DrunkMeterDB.value = savedValue
+        self.decayElapsed = savedPhase
+        self:Log("offline recovery | clock moved backwards=" .. math.abs(offlineSeconds)
+            .. "s | before=" .. savedValue
+            .. " | after=" .. savedValue
+            .. " | phase=" .. string.format("%.2f", savedPhase))
+        return
+    end
+
+    local totalElapsed = savedPhase + offlineSeconds
+    local ticks = math.floor(totalElapsed / self.DECAY_SECONDS)
+    local after = savedValue - ticks
+    if after < 0 then after = 0 end
+
+    local remainingPhase = totalElapsed - ticks * self.DECAY_SECONDS
+    if after <= 0 then remainingPhase = 0 end
+
+    DrunkMeterDB.value = after
+    self.decayElapsed = remainingPhase
+    DrunkMeterDB.lastOfflineSeconds = offlineSeconds
+    DrunkMeterDB.lastOfflineBefore = savedValue
+    DrunkMeterDB.lastOfflineAfter = after
+    DrunkMeterDB.lastOfflineTicks = ticks
+
+    if offlineSeconds > 0 then
+        table.insert(DrunkMeterDB.offlineHistory, {
+            epoch = now,
+            value = after,
+            decayElapsed = remainingPhase,
+            reason = "login-recovery",
+            offlineSeconds = offlineSeconds,
+            before = savedValue,
+            ticks = ticks
+        })
+        self:TrimList(DrunkMeterDB.offlineHistory, self.OFFLINE_HISTORY_MAX)
+    end
+
+    self:Log("offline recovery | before=" .. math.floor(savedValue + 0.5)
+        .. " | offline=" .. offlineSeconds .. "s"
+        .. " | ticks=" .. ticks
+        .. " | after=" .. math.floor(after + 0.5)
+        .. " | phase=" .. string.format("%.2f", remainingPhase))
+
+    if ticks > 0 and savedValue > after then
+        chat("offline " .. self:FormatDuration(offlineSeconds) .. " | estimated "
+            .. math.floor(savedValue + 0.5) .. " -> " .. math.floor(after + 0.5))
+    end
+end'''
+          s = replace_section(s, 'function DM:RestoreOfflineDecay()', 'function DM:GetState(v)', restore)
+
+          line_y = r'''function DM:GetLineY(y)
+    local half = self.LINE_HEIGHT / 2
+    return clamp(tonumber(y) or half, half, self.BAR_HEIGHT - half)
+end
+
+'''
+          if 'function DM:GetLineY' not in s:
+              s = s.replace('function DM:UpdateBar()', line_y + 'function DM:UpdateBar()', 1)
+
+          s = s.replace('''    self:Log("drink | " .. name .. " | +" .. value .. " | " .. math.floor(before + 0.5) .. " -> " .. math.floor(after + 0.5) .. " | source=" .. source)''', '''    self:Log("drink | " .. name .. " | +" .. value .. " | " .. math.floor(before + 0.5)
+        .. " -> " .. math.floor(after + 0.5) .. " | phase="
+        .. string.format("%.2f", tonumber(self.decayElapsed) or 0) .. " | source=" .. source)''', 1)
+          s = s.replace('''    self:Log("decay | -1 | " .. math.floor(before + 0.5) .. " -> " .. math.floor(after + 0.5))''', '''    self:Log("decay tick | -1 | " .. math.floor(before + 0.5) .. " -> " .. math.floor(after + 0.5)
+        .. " | next-phase=" .. string.format("%.3f", tonumber(self.decayElapsed) or 0))''', 1)
+
+          tick = r'''function DM:CreateSolidTexture(parent, layer, r, g, b, a)
+    local tex = parent:CreateTexture(nil, layer or "OVERLAY")
+    tex:SetTexture(self.SOLID_TEXTURE)
+    tex:SetVertexColor(r or 1, g or 1, b or 1)
+    tex:SetAlpha(a or 1)
+    return tex
+end
+
+function DM:CreateTickAtValue(v, r, g, b)
+    local y = self:GetLineY(self:GetVisualOffset(v))
+    local tick = self:CreateSolidTexture(self.bar, "OVERLAY", r or 0.62, g or 0.62, b or 0.62, 1)
+    tick:SetWidth(self.BAR_WIDTH)
+    tick:SetHeight(self.LINE_HEIGHT)
+    tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)
+    return tick
+end'''
+          s = replace_section(s, 'function DM:CreateTickAtValue(v, r, g, b)', 'function DM:PlayThresholdWarning(state)', tick)
+
+          ticker = r'''function DM:UpdateDecayTicker()
+    if not self.decayLine then return end
+
+    local v = tonumber(DrunkMeterDB and DrunkMeterDB.value) or 0
+    if v <= 0 then
+        self.decayLine:Hide()
+        return
+    end
+
+    local progress = self:NormalisePhase(self.decayElapsed) / self.DECAY_SECONDS
+    progress = clamp(progress, 0, 1)
+
+    local half = self.LINE_HEIGHT / 2
+    local travel = self.BAR_HEIGHT - self.LINE_HEIGHT
+    local y = half + travel * (1 - progress)
+
+    self.decayLine:ClearAllPoints()
+    self.decayLine:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)
+    self.decayLine:Show()
+end'''
+          s = replace_section(s, 'function DM:UpdateDecayTicker()', 'function DM:ShowTrackingTooltip()', ticker)
+
+          bar_texture = r'''function DM:ApplyNativeBarTexture()
+    if not self.bar then return end
+    self.bar:SetStatusBarTexture(self.BAR_TEXTURE)
+end'''
+          s = replace_section(s, 'function DM:ApplyNativeBarTexture()', 'function DM:CreateUI()', bar_texture)
+
+          create_ui = r'''function DM:CreateBorderTexture(parent, point1, relPoint1, x1, y1, point2, relPoint2, x2, y2, width, height)
+    local tex = self:CreateSolidTexture(parent, "OVERLAY", 0.30, 0.30, 0.30, 1)
+    tex:SetPoint(point1, parent, relPoint1, x1, y1)
+    if point2 then tex:SetPoint(point2, parent, relPoint2, x2, y2) end
+    if width then tex:SetWidth(width) end
+    if height then tex:SetHeight(height) end
+    return tex
+end
+
+function DM:CreateUI()
+    if self.frame then return end
+
+    local f = CreateFrame("Frame", "DrunkMeterFrame", UIParent)
+    self.frame = f
+    f:SetWidth(48)
+    f:SetHeight(236)
+    f:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
+    f:SetFrameStrata("MEDIUM")
+    f:SetMovable(1)
+    f:EnableMouse(1)
+    f:RegisterForDrag("LeftButton")
+
+    f:SetScript("OnDragStart", function()
+        if DrunkMeterDB and not DrunkMeterDB.locked then this:StartMoving() end
+    end)
+    f:SetScript("OnDragStop", function()
+        this:StopMovingOrSizing()
+        DM:SavePosition()
+    end)
+    f:SetScript("OnEnter", function() DM:ShowTrackingTooltip() end)
+    f:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+
+    local outer = CreateFrame("Frame", "DrunkMeterBarBody", f)
+    self.barOuter = outer
+    outer:SetWidth(self.OUTER_BAR_WIDTH)
+    outer:SetHeight(self.BAR_HEIGHT + self.BAR_INSET * 2)
+    outer:SetPoint("TOP", f, "TOP", 0, -6)
+
+    local outerBg = self:CreateSolidTexture(outer, "BACKGROUND", 0.015, 0.015, 0.015, 1)
+    outerBg:SetAllPoints(outer)
+    self.barOuterBackground = outerBg
+
+    self.borderTop = self:CreateBorderTexture(outer, "TOPLEFT", "TOPLEFT", 0, 0, "TOPRIGHT", "TOPRIGHT", 0, 0, nil, 1)
+    self.borderBottom = self:CreateBorderTexture(outer, "BOTTOMLEFT", "BOTTOMLEFT", 0, 0, "BOTTOMRIGHT", "BOTTOMRIGHT", 0, 0, nil, 1)
+    self.borderLeft = self:CreateBorderTexture(outer, "TOPLEFT", "TOPLEFT", 0, 0, "BOTTOMLEFT", "BOTTOMLEFT", 0, 0, 1, nil)
+    self.borderRight = self:CreateBorderTexture(outer, "TOPRIGHT", "TOPRIGHT", 0, 0, "BOTTOMRIGHT", "BOTTOMRIGHT", 0, 0, 1, nil)
+
+    local bar = CreateFrame("StatusBar", "DrunkMeterStatusBar", outer)
+    self.bar = bar
+    bar:SetWidth(self.BAR_WIDTH)
+    bar:SetHeight(self.BAR_HEIGHT)
+    bar:SetPoint("CENTER", outer, "CENTER", 0, 0)
+    bar:SetMinMaxValues(0, self.BAR_HEIGHT)
+    bar:SetValue(0)
+    if bar.SetOrientation then bar:SetOrientation("VERTICAL") end
+
+    local empty = self:CreateSolidTexture(bar, "BACKGROUND", 0.01, 0.01, 0.01, 1)
+    empty:SetAllPoints(bar)
+    self.barBackground = empty
+    self:ApplyNativeBarTexture()
+    bar:SetStatusBarColor(self.BAR_RED_R, self.BAR_RED_G, self.BAR_RED_B)
+
+    self.drunkTick = self:CreateTickAtValue(self.DRUNK_AT, 0.68, 0.68, 0.68)
+    self.smashedTick = self:CreateTickAtValue(self.SMASHED_AT, 0.96, 0.78, 0.18)
+
+    local decayLine = self:CreateSolidTexture(bar, "OVERLAY", 1.0, 1.0, 1.0, 1)
+    self.decayLine = decayLine
+    decayLine:SetWidth(self.BAR_WIDTH)
+    decayLine:SetHeight(self.LINE_HEIGHT)
+    decayLine:Hide()
+    self.decayNub = nil
+    self.decayGlow = nil
+
+    local valueText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    self.valueText = valueText
+    valueText:SetPoint("TOP", outer, "BOTTOM", 0, -5)
+    valueText:SetText("0/256")
+    valueText:SetTextColor(1.0, 0.94, 0.78)
+    if valueText.SetJustifyH then valueText:SetJustifyH("CENTER") end
+    if valueText.SetShadowOffset then valueText:SetShadowOffset(1, -1) end
+
+    local stateText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.stateText = stateText
+    stateText:SetPoint("TOP", valueText, "BOTTOM", 0, -1)
+    stateText:SetText("SOBER")
+    stateText:SetTextColor(0.92, 0.88, 0.76)
+    if stateText.SetJustifyH then stateText:SetJustifyH("CENTER") end
+    if stateText.SetShadowOffset then stateText:SetShadowOffset(1, -1) end
+end'''
+          s = replace_section(s, 'function DM:CreateUI()', 'function DM:InitHooks()', create_ui)
+
+          sync = r'''function DM:SyncFromDrunkMessage(state, msg, kind)
+    self:EnsureDB()
+    local before = tonumber(DrunkMeterDB.value) or 0
+    local after = self:GetSyncedValueForState(state, before)
+    local phaseBefore = tonumber(self.decayElapsed) or 0
+
+    self.warningState = nil
+    if after ~= before then
+        self:SetValue(after, "chat sync " .. state)
+    else
+        self:UpdateBar()
+        self:RefreshLevelDisplays()
+    end
+
+    self:Log("chat sync | " .. tostring(kind or "state") .. " | " .. state .. " | "
+        .. math.floor(before + 0.5) .. " -> " .. math.floor(after + 0.5)
+        .. " | phase-preserved=" .. string.format("%.2f", phaseBefore)
+        .. " | " .. tostring(msg))
+end'''
+          s = replace_section(s, 'function DM:SyncFromDrunkMessage(state, msg, kind)', 'function DM:HandleSystemMessage(msg)', sync)
+
+          slash = r'''function DM:Slash(msg)
+    self:EnsureDB()
+    msg = msg or ""
+    local s = lower(msg)
+
+    local _, _, n = string.find(s, "^set%s+(%d+)")
+    if n then
+        n = clamp(tonumber(n) or 0, 0, self.MAX_VALUE)
+        self:ResetDecayPhase("manual /drunk set")
+        self:SetValue(n, "set")
+        self:Log("set | value=" .. n)
+        chat("set to " .. n .. " / " .. self.MAX_VALUE)
+        return
+    end
+
+    if s == "debug" then
+        DrunkMeterDB.debug = not DrunkMeterDB.debug
+        self.debugTimerElapsed = 0
+        chat("debug " .. (DrunkMeterDB.debug and "ON" or "OFF"))
+        if DrunkMeterDB.debug then
+            self:Log("timer debug enabled | phase=" .. string.format("%.3f", tonumber(self.decayElapsed) or 0)
+                .. " | value=" .. math.floor((DrunkMeterDB.value or 0) + 0.5))
+        end
+        return
+    end
+
+    if s == "lock" then DrunkMeterDB.locked = true chat("bar locked") return end
+    if s == "unlock" then DrunkMeterDB.locked = false chat("bar unlocked; drag with left mouse") return end
+    if s == "reset" then
+        self:ResetDecayPhase("manual /drunk reset")
+        self:SetValue(0, "reset")
+        self:Log("manual reset")
+        chat("reset to 0 / " .. self.MAX_VALUE)
+        return
+    end
+    if s == "clearlog" then DrunkMeterLog = {} chat("SavedVariables log cleared") return end
+    if s == "show" then self.frame:Show() return end
+    if s == "hide" then self.frame:Hide() return end
+
+    chat(math.floor(DrunkMeterDB.value + 0.5) .. " / " .. self.MAX_VALUE .. " (" .. self:GetState(DrunkMeterDB.value) .. ")")
+    chat("/drunk set <0-256>, debug, lock, unlock, reset, clearlog, show, hide")
+end'''
+          s = replace_section(s, 'function DM:Slash(msg)', 'function DM:Initialize()', slash)
+
+          init = r'''function DM:Initialize()
+    if self.initialized then return end
+
+    self:EnsureDB()
+    self:RestoreOfflineDecay()
+    self:CreateUI()
+    self:ApplyPosition()
+    self:InitHooks()
+    self:InstallTrueLevelHook()
+    self.nameplateElapsed = 0
+    self.nameplateFontCache = {}
+    self.nameplateFrameFonts = {}
+    self.nameplateCorrectionDisabled = false
+    self.nameplateRestoreErrorLogged = false
+    self.pendingDrinkErrorLogged = false
+    self.debugTimerElapsed = 0
+    self.lastUpdateTime = type(GetTime) == "function" and GetTime() or nil
+    self.initialized = true
+    self:UpdateBar()
+    self:RefreshLevelDisplays()
+    self:SaveOfflineSnapshot("session-start", false)
+
+    self:Log("session start | DrunkMeter " .. self.VERSION .. " | value="
+        .. math.floor(DrunkMeterDB.value + 0.5) .. " | phase="
+        .. string.format("%.2f", tonumber(self.decayElapsed) or 0))
+end'''
+          s = replace_section(s, 'function DM:Initialize()', 'function DM:OnEvent(ev)', init)
+
+          on_event = r'''function DM:OnEvent(ev)
+    if ev == "VARIABLES_LOADED" then
+        self:Initialize()
+    elseif ev == "PLAYER_LOGOUT" then
+        if self.initialized then
+            self:SaveOfflineSnapshot("logout", true)
+            self:Log("session end | value=" .. math.floor((DrunkMeterDB.value or 0) + 0.5)
+                .. " | phase=" .. string.format("%.2f", tonumber(self.decayElapsed) or 0))
+        end
+    elseif ev == "PLAYER_DEAD" then
+        if self.initialized then
+            self:ResetDecayPhase("death")
+            self:SetValue(0, "death")
+            self:Log("death | reset to sober")
+        end
+    elseif ev == "CHAT_MSG_SYSTEM" then
+        if self.initialized then self:HandleSystemMessage(arg1) end
+    end
+end'''
+          s = replace_section(s, 'function DM:OnEvent(ev)', 'function DM:OnUpdate(elapsed)', on_event)
+
+          timer = r'''function DM:GetFrameDelta(elapsed)
+    local raw = tonumber(elapsed)
+    local now = nil
+    local fallback = nil
+    if type(GetTime) == "function" then
+        local ok, t = pcall(GetTime)
+        if ok then now = tonumber(t) end
+    end
+    if now and self.lastUpdateTime then fallback = now - self.lastUpdateTime end
+    if now then self.lastUpdateTime = now end
+
+    local dt = raw
+    local source = "callback"
+    if not dt or dt <= 0 then
+        dt = fallback
+        source = "GetTime"
+    elseif fallback and fallback > 0 then
+        local ratio = dt / fallback
+        if ratio < 0 then ratio = -ratio end
+        if dt > 2 and (ratio > 4 or ratio < 0.25) then
+            dt = fallback
+            source = "GetTime-sanity"
+        end
+    end
+    if not dt or dt <= 0 then dt = 0 source = "none" end
+    if dt > self.MAX_SANE_DELTA then
+        if fallback and fallback > 0 and fallback <= self.MAX_SANE_DELTA then
+            dt = fallback
+            source = "GetTime-large-fallback"
+        else
+            dt = self.MAX_SANE_DELTA
+            source = source .. "-capped"
+        end
+    end
+    return dt, raw, fallback, source
+end
+
+function DM:DebugTimerSample(dt, raw, fallback, source)
+    if not DrunkMeterDB or not DrunkMeterDB.debug then return end
+    self.debugTimerElapsed = (tonumber(self.debugTimerElapsed) or 0) + (tonumber(dt) or 0)
+    if self.debugTimerElapsed < self.DEBUG_TIMER_LOG_SECONDS then return end
+    self.debugTimerElapsed = self.debugTimerElapsed - math.floor(self.debugTimerElapsed / self.DEBUG_TIMER_LOG_SECONDS) * self.DEBUG_TIMER_LOG_SECONDS
+    local rawText = raw and string.format("%.4f", raw) or "nil"
+    local fallbackText = fallback and string.format("%.4f", fallback) or "nil"
+    self:Log("timer sample | raw=" .. rawText
+        .. " | fallback=" .. fallbackText
+        .. " | used=" .. string.format("%.4f", tonumber(dt) or 0)
+        .. " | source=" .. tostring(source)
+        .. " | phase=" .. string.format("%.3f", tonumber(self.decayElapsed) or 0)
+        .. " | value=" .. math.floor((DrunkMeterDB.value or 0) + 0.5))
+end
+
+function DM:AdvanceDecay(dt)
+    if DrunkMeterDB.value <= 0 then
+        if (tonumber(self.decayElapsed) or 0) ~= 0 then self:ResetDecayPhase("value is sober") end
+        return
+    end
+    self.decayElapsed = (tonumber(self.decayElapsed) or 0) + (tonumber(dt) or 0)
+    while self.decayElapsed >= self.DECAY_SECONDS do
+        self.decayElapsed = self.decayElapsed - self.DECAY_SECONDS
+        self:DecayOne()
+        if DrunkMeterDB.value <= 0 then
+            self:ResetDecayPhase("decay reached zero")
+            break
+        end
+    end
+end
+
+function DM:OnUpdate(elapsed)
+    if not self.initialized then return end
+    self:EnsureDB()
+    local dt, raw, fallback, source = self:GetFrameDelta(elapsed)
+
+    local pendingOK, pendingErr = pcall(self.ConfirmPendingDrink, self)
+    if not pendingOK and not self.pendingDrinkErrorLogged then
+        self.pendingDrinkErrorLogged = true
+        self:Log("pending drink confirmation error | " .. tostring(pendingErr))
+    end
+
+    self:AdvanceDecay(dt)
+    self:UpdateThresholdWarning()
+    self:UpdateDecayTicker()
+    self:DebugTimerSample(dt, raw, fallback, source)
+
+    self.nameplateElapsed = (tonumber(self.nameplateElapsed) or 0) + dt
+    if self.nameplateElapsed >= self.NAMEPLATE_SCAN_SECONDS then
+        self.nameplateElapsed = self.nameplateElapsed - self.NAMEPLATE_SCAN_SECONDS
+        if self.nameplateElapsed > self.NAMEPLATE_SCAN_SECONDS then self.nameplateElapsed = 0 end
+        if DrunkMeterDB.value > 0 then
+            self:SafeRefreshNameplateLevels()
+        elseif self.nameplateFrameFonts then
+            self:SafeRestoreNameplateLevels()
+        end
+    end
+end'''
+          s = replace_section(s, 'function DM:OnUpdate(elapsed)', 'local driver = CreateFrame("Frame", "DrunkMeterDriver", UIParent)', timer)
+
+          old_driver = '''driver:SetScript("OnUpdate", function(a, b)
+    -- Compatible with modern-style (frame, elapsed), single elapsed argument,
+    -- and legacy Vanilla global arg1 script dispatch.
+    local elapsed = tonumber(b) or tonumber(a) or tonumber(arg1)
+    DM:OnUpdate(elapsed)
+end)'''
+          new_driver = '''driver:SetScript("OnUpdate", function(a, b)
+    local elapsed = nil
+    if type(b) == "number" then
+        elapsed = b
+    elseif type(a) == "number" then
+        elapsed = a
+    elseif type(arg1) == "number" then
+        elapsed = arg1
+    end
+    DM:OnUpdate(elapsed)
+end)'''
+          if old_driver not in s:
+              raise SystemExit('Expected old driver OnUpdate block not found')
+          s = s.replace(old_driver, new_driver, 1)
+
+          assert s.count('function DM:OnUpdate(elapsed)') == 1
+          assert s.count('function DM:AdvanceDecay(dt)') == 1
+          assert s.count('driver:SetScript("OnUpdate"') == 1
+          assert 'DM.BAR_WIDTH = 28' in s
+          assert 'DM.OUTER_BAR_WIDTH = 32' in s
+          assert 'Interface\\\\Buttons\\\\WHITE8X8' not in s
+          path.write_text(s)
+
+          Path('DrunkMeter/DrunkMeter.toc').write_text('''## Interface: 11200
+## Title: DrunkMeter
+## Notes: Tracks estimated drunkenness and alcohol potency on Vanilla/OctoWoW.
+## Author: Ollie / ChatGPT
+## Version: 0.6.2
+## SavedVariables: DrunkMeterDB, DrunkMeterLog
+
+DrunkMeter.lua
+''')
+          Path('DrunkMeter/README.txt').write_text('''DrunkMeter 0.6.2
+================
+
+Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
+
+0.6.2
+-----
+- Restored the intended 32 px outer / 28 px inner tall meter proportions.
+- Flat dark-red fill is inset inside a thin border; no gradient.
+- Exactly two static markers: DRUNK grey and SMASHED gold.
+- White 2 px ticker sweeps top-to-bottom across the full bar every 10 seconds.
+- Live decay and ticker share one authoritative decayElapsed phase.
+- Chat/system synchronisation no longer resets the decay phase.
+- Robust elapsed handling uses callback elapsed plus GetTime() fallback and sanity checks.
+- Offline recovery runs once and preserves the saved partial phase.
+- /drunk debug logs bounded timer samples, ticks, resets, offline recovery and drinks.
+
+Commands
+--------
+/drunk set <0-256>     Manually correct estimate (resets phase).
+/drunk reset           Set value to zero and reset phase.
+/drunk lock            Lock meter.
+/drunk unlock          Unlock for dragging.
+/drunk debug           Toggle timer/debug output.
+/drunk clearlog        Clear debug log.
+/drunk show            Show meter.
+/drunk hide            Hide meter.
+
+Install
+-------
+Copy DrunkMeter to Interface\\AddOns\\DrunkMeter and enable it.
+''')
+          Path('README.md').write_text('''# DrunkMeter
+
+A lightweight Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
+
+## Features
+
+- Confirmed-drink tracking; failed/cooldown uses do not increase the meter.
+- 0-256 scale with Blizzard sober/tipsy/drunk/smashed synchronisation.
+- One authoritative 10-second live decay clock with offline partial-phase recovery.
+- Target/nameplate true-level correction with nameplate failures isolated from core tracking.
+- Tall **32 px outer / 28 px inner** meter with flat dark-red fill.
+- Exactly two static markers: **DRUNK** grey and **SMASHED** gold.
+- White 2 px full-height decay ticker, independent of fill height.
+
+## 0.6.2
+
+- Restored the pre-regression width and inset fill so it cannot cover the border.
+- Uses the Vanilla-safe `Interface\\\\ChatFrame\\\\ChatFrameBackground` solid texture for fill/lines.
+- Removed chat/system phase resets that could repeatedly restart the decay clock.
+- Callback elapsed is sanity-checked and falls back to monotonic `GetTime()` when absent/invalid.
+- Offline recovery is one-shot and preserves the remainder of the 10-second phase.
+- `/drunk debug` records periodic raw/fallback delta, used delta, phase/value, ticks, explicit resets and drinks.
+
+## Install
+
+Download `DrunkMeter-0.6.2.zip`, extract it, and copy `DrunkMeter` to `Interface\\\\AddOns\\\\DrunkMeter`.
+
+Built for WoW 1.12.1 (`Interface: 11200`) / OctoWoW.
+
+Current version: **0.6.2**
+''')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('DrunkMeter/DrunkMeter.lua').read_text()
+          assert 'DM.VERSION = "0.6.2"' in s
+          assert 'DM.OUTER_BAR_WIDTH = 32' in s
+          assert 'DM.BAR_WIDTH = 28' in s
+          assert s.count('function DM:OnUpdate(elapsed)') == 1
+          assert s.count('function DM:AdvanceDecay(dt)') == 1
+          assert 'DM.BAR_TEXTURE = DM.SOLID_TEXTURE' in s
+          assert 'phase-preserved=' in s
+          assert 'local travel = self.BAR_HEIGHT - self.LINE_HEIGHT' in s
+          assert 'if self.offlineRecoveryApplied then return end' in s
+
+          def advance(value, phase, dt):
+              phase += dt
+              while value > 0 and phase >= 10:
+                  phase -= 10
+                  value -= 1
+              if value <= 0: phase = 0
+              return value, phase
+          assert advance(129,0,10)==(128,0)
+          assert advance(128,0,20)==(126,0)
+          assert advance(80,6,4)==(79,0)
+          total=7+8
+          assert (100-total//10,total%10)==(99,5)
+          ys=[1+(196-2)*(1-p) for p in (0,.25,.5,.75,1)]
+          assert ys==[195.0,146.5,98.0,49.5,1.0]
+          print('validation ok')
+          PY
+
+          rm -f DrunkMeter-0.6.2.zip
+          zip -r DrunkMeter-0.6.2.zip DrunkMeter >/dev/null
+          unzip -t DrunkMeter-0.6.2.zip
+
+          rm -f .github/workflows/finalize-v050-fixed.yml
+          rm -f .github/workflows/apply-v062.yml
+
+          git config user.name "Equadis automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix DrunkMeter decay scheduler and meter rendering (0.6.2)"
+          git push origin HEAD:main
