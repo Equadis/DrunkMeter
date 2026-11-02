@@ -15,15 +15,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-
       - name: Run validated 0.6.2 patch
         shell: bash
         run: |
           git show HEAD^:.github/workflows/apply-v062.yml > /tmp/previous-workflow.yml
           python3 - <<'PY'
           from pathlib import Path
-          import subprocess
-
           raw = Path('/tmp/previous-workflow.yml').read_text()
           lines = raw.splitlines()
           start = None
@@ -33,7 +30,6 @@ jobs:
                   break
           if start is None:
               raise SystemExit('Could not recover previous patch script')
-
           out = []
           for line in lines[start:]:
               if line.startswith('          '):
@@ -41,32 +37,31 @@ jobs:
               elif line.strip() == '':
                   out.append('')
               else:
-                  raise SystemExit('Unexpected indentation in recovered patch script: ' + line)
+                  raise SystemExit('Unexpected indentation: ' + line)
           script = '\n'.join(out) + '\n'
-
-          # The first generated workflow had an over-indented exact driver match.
-          # Replace that one fragile patch-script section with marker-based replacement.
           a = script.find("old_driver = '''driver:SetScript")
           b = script.find('# Final source-level invariants.', a)
           if a < 0 or b < 0:
               raise SystemExit('Could not locate driver patch section')
-          replacement = r'''driver_block = r''' + "'''" + r'''driver:SetScript("OnUpdate", function(a, b)
-    -- 1.12 normally exposes elapsed through global arg1. Some OctoWoW-derived
-    -- clients also pass (frame, elapsed) or a single elapsed argument.
-    local elapsed = nil
-    if type(b) == "number" then
-        elapsed = b
-    elseif type(a) == "number" then
-        elapsed = a
-    elseif type(arg1) == "number" then
-        elapsed = arg1
-    end
-    DM:OnUpdate(elapsed)
-end)''' + "'''" + r'''
-s = replace_section(s, 'driver:SetScript("OnUpdate", function(a, b)', 'SLASH_DRUNKMETER1 = "/drunk"', driver_block)
-
-'''
-          script = script[:a] + replacement + script[b:]
+          q = "'''"
+          replacement_lines = [
+              "driver_block = r" + q + 'driver:SetScript("OnUpdate", function(a, b)',
+              '    -- 1.12 normally exposes elapsed through global arg1. Some OctoWoW-derived',
+              '    -- clients also pass (frame, elapsed) or a single elapsed argument.',
+              '    local elapsed = nil',
+              '    if type(b) == "number" then',
+              '        elapsed = b',
+              '    elseif type(a) == "number" then',
+              '        elapsed = a',
+              '    elseif type(arg1) == "number" then',
+              '        elapsed = arg1',
+              '    end',
+              '    DM:OnUpdate(elapsed)',
+              'end)' + q,
+              's = replace_section(s, \'driver:SetScript("OnUpdate", function(a, b)\', \'SLASH_DRUNKMETER1 = "/drunk"\', driver_block)',
+              '',
+          ]
+          script = script[:a] + '\n'.join(replacement_lines) + '\n' + script[b:]
           Path('/tmp/apply-v062.sh').write_text(script)
           PY
           bash /tmp/apply-v062.sh
