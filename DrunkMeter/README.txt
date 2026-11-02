@@ -1,4 +1,4 @@
-DrunkMeter 0.5.0
+DrunkMeter 0.6.0
 ================
 
 Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
@@ -8,7 +8,8 @@ Features
 - Tracks confirmed alcohol consumption and potency.
 - Syncs from Blizzard sober/tipsy/drunk/smashed system messages.
 - Corrects drunk-distorted hostile enemy levels on the target frame and visible nameplates.
-- Uses a compact textured vertical meter with threshold warnings.
+- Uses a slim textured vertical meter with only DRUNK (grey) and SMASHED (gold) threshold lines.
+- Value and state are displayed below the meter; drink icons and the tipsy/max markers are removed.
 - Automatically estimates decay while you are offline.
 - Nameplate correction is failure-isolated so custom nameplates cannot stop drink tracking or decay.
 

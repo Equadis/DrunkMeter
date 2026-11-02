@@ -1,4 +1,4 @@
--- DrunkMeter 0.5.0
+-- DrunkMeter 0.6.0
 -- Vanilla WoW / Lua 5.0 compatible.
 --
 -- Tracks estimated drunkenness from drink use and shows it on a compact
@@ -7,12 +7,12 @@
 DrunkMeter = {}
 local DM = DrunkMeter
 
-DM.VERSION = "0.5.0"
+DM.VERSION = "0.6.0"
 DM.MAX_VALUE = 256
 DM.DRUNK_AT = 50
 DM.SMASHED_AT = 90
 DM.DECAY_SECONDS = 10
-DM.BAR_WIDTH = 22
+DM.BAR_WIDTH = 12
 DM.BAR_HEIGHT = 196
 DM.WARNING_SECONDS = 3
 DM.PENDING_USE_TIMEOUT = 1.5
@@ -253,29 +253,6 @@ function DM:GetVisualOffset(v)
     return self:GetVisualFraction(v) * self.BAR_HEIGHT
 end
 
-function DM:UpdateIconEmphasis(state)
-    if not self.tipsyIcon then return end
-    local tipsyAlpha = 0.55
-    local drunkAlpha = 0.55
-    local smashedAlpha = 0.55
-
-    if state == "TIPSY" then
-        tipsyAlpha = 1.0
-    elseif state == "DRUNK" then
-        drunkAlpha = 1.0
-    elseif state == "SMASHED" then
-        smashedAlpha = 1.0
-    elseif state == "SOBER" then
-        tipsyAlpha = 0.85
-        drunkAlpha = 0.85
-        smashedAlpha = 0.85
-    end
-
-    self.tipsyIcon:SetAlpha(tipsyAlpha)
-    self.drunkIcon:SetAlpha(drunkAlpha)
-    self.smashedIcon:SetAlpha(smashedAlpha)
-end
-
 function DM:UpdateBar()
     if not self.bar or not DrunkMeterDB then return end
 
@@ -301,7 +278,6 @@ function DM:UpdateBar()
     -- Dark solid red fill. Threshold/ticker lines are separate OVERLAY textures.
     self.bar:SetStatusBarColor(self.BAR_RED_R, self.BAR_RED_G, self.BAR_RED_B)
 
-    self:UpdateIconEmphasis(state)
     self:UpdateDecayTicker()
 end
 
@@ -1001,27 +977,16 @@ function DM:ApplyPosition()
     self.frame:SetPoint(DrunkMeterDB.point, UIParent, DrunkMeterDB.relPoint, DrunkMeterDB.x, DrunkMeterDB.y)
 end
 
-function DM:CreateTickAtValue(v)
+function DM:CreateTickAtValue(v, r, g, b)
     local y = self:GetVisualOffset(v)
-    -- Parent the marker to the StatusBar itself so OVERLAY always renders
-    -- above the red status-bar texture instead of being hidden behind it.
+    -- Threshold markers sit entirely inside the bar and span exactly its width.
     local tick = self.bar:CreateTexture(nil, "OVERLAY")
     tick:SetTexture("Interface\\Buttons\\WHITE8X8")
-    tick:SetVertexColor(0.96, 0.84, 0.48)
-    tick:SetWidth(self.BAR_WIDTH + 12)
+    tick:SetVertexColor(r or 0.96, g or 0.84, b or 0.48)
+    tick:SetWidth(self.BAR_WIDTH)
     tick:SetHeight(2)
-    tick:SetPoint("LEFT", self.bar, "BOTTOMLEFT", -1, y)
+    tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)
     return tick
-end
-
-function DM:CreateIconAtValue(v, texturePath, w, h)
-    local y = self:GetVisualOffset(v)
-    local icon = self.frame:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(texturePath)
-    icon:SetWidth(w)
-    icon:SetHeight(h)
-    icon:SetPoint("LEFT", self.bar, "BOTTOMRIGHT", 13, y)
-    return icon
 end
 
 function DM:PlayThresholdWarning(state)
@@ -1152,24 +1117,13 @@ function DM:CreateUI()
 
     local f = CreateFrame("Frame", "DrunkMeterFrame", UIParent)
     self.frame = f
-    f:SetWidth(104)
-    f:SetHeight(258)
+    f:SetWidth(48)
+    f:SetHeight(232)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
     f:SetFrameStrata("MEDIUM")
     f:SetMovable(1)
     f:EnableMouse(1)
     f:RegisterForDrag("LeftButton")
-
-    f:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 }
-    })
-    f:SetBackdropColor(0.02, 0.06, 0.03, 0.92)
-    f:SetBackdropBorderColor(0.72, 0.61, 0.34, 1.0)
 
     f:SetScript("OnDragStart", function()
         if DrunkMeterDB and not DrunkMeterDB.locked then
@@ -1189,7 +1143,7 @@ function DM:CreateUI()
     self.bar = bar
     bar:SetWidth(self.BAR_WIDTH)
     bar:SetHeight(self.BAR_HEIGHT)
-    bar:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -17)
+    bar:SetPoint("TOP", f, "TOP", 0, -6)
     bar:SetMinMaxValues(0, self.BAR_HEIGHT)
     bar:SetValue(0)
     if bar.SetOrientation then bar:SetOrientation("VERTICAL") end
@@ -1198,52 +1152,37 @@ function DM:CreateUI()
     bar:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 8,
+        tile = true, tileSize = 16, edgeSize = 7,
         insets = { left = 1, right = 1, top = 1, bottom = 1 }
     })
-    bar:SetBackdropColor(0.00, 0.03, 0.01, 0.98)
-    bar:SetBackdropBorderColor(0.48, 0.42, 0.31, 1.0)
+    bar:SetBackdropColor(0.00, 0.02, 0.01, 0.98)
+    bar:SetBackdropBorderColor(0.68, 0.57, 0.30, 1.0)
 
-    local topTick = bar:CreateTexture(nil, "OVERLAY")
-    self.topTick = topTick
-    topTick:SetTexture("Interface\\Buttons\\WHITE8X8")
-    topTick:SetVertexColor(0.96, 0.84, 0.48)
-    topTick:SetWidth(self.BAR_WIDTH + 12)
-    topTick:SetHeight(2)
-    topTick:SetPoint("LEFT", bar, "TOPLEFT", -1, 0)
-
-    self.tipsyTick = self:CreateTickAtValue(1)
-    self.drunkTick = self:CreateTickAtValue(self.DRUNK_AT)
-    self.smashedTick = self:CreateTickAtValue(self.SMASHED_AT)
-
-    self.tipsyIcon = self:CreateIconAtValue(1, "Interface\\AddOns\\DrunkMeter\\Textures\\tipsy.tga", 20, 20)
-    self.drunkIcon = self:CreateIconAtValue(self.DRUNK_AT, "Interface\\AddOns\\DrunkMeter\\Textures\\drunk.tga", 22, 24)
-    self.smashedIcon = self:CreateIconAtValue(self.SMASHED_AT, "Interface\\AddOns\\DrunkMeter\\Textures\\smashed.tga", 24, 24)
-    self.tipsyIcon:ClearAllPoints()
-    self.tipsyIcon:SetPoint("LEFT", self.bar, "BOTTOMRIGHT", 9, self:GetVisualOffset(1) - 2)
-    self.drunkIcon:ClearAllPoints()
-    self.drunkIcon:SetPoint("LEFT", self.bar, "BOTTOMRIGHT", 9, self:GetVisualOffset(self.DRUNK_AT))
-    self.smashedIcon:ClearAllPoints()
-    self.smashedIcon:SetPoint("LEFT", self.bar, "BOTTOMRIGHT", 9, self:GetVisualOffset(self.SMASHED_AT))
+    -- Only DRUNK and SMASHED thresholds remain.
+    self.drunkTick = self:CreateTickAtValue(self.DRUNK_AT, 0.62, 0.62, 0.62)
+    self.smashedTick = self:CreateTickAtValue(self.SMASHED_AT, 0.96, 0.84, 0.48)
 
     local valueText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     self.valueText = valueText
-    valueText:SetPoint("TOPRIGHT", f, "TOPRIGHT", -9, -10)
+    valueText:SetPoint("TOP", bar, "BOTTOM", 0, -5)
     valueText:SetText("0/256")
     valueText:SetTextColor(1.0, 0.94, 0.78)
+    if valueText.SetJustifyH then valueText:SetJustifyH("CENTER") end
     if valueText.SetShadowOffset then valueText:SetShadowOffset(1, -1) end
 
     local stateText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     self.stateText = stateText
-    stateText:SetPoint("TOPRIGHT", valueText, "BOTTOMRIGHT", 0, -1)
+    stateText:SetPoint("TOP", valueText, "BOTTOM", 0, -1)
     stateText:SetText("SOBER")
     stateText:SetTextColor(0.92, 0.88, 0.76)
+    if stateText.SetJustifyH then stateText:SetJustifyH("CENTER") end
+    if stateText.SetShadowOffset then stateText:SetShadowOffset(1, -1) end
 
     local decayGlow = bar:CreateTexture(nil, "OVERLAY")
     self.decayGlow = decayGlow
     decayGlow:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
     decayGlow:SetVertexColor(1.0, 1.0, 1.0)
-    decayGlow:SetWidth(self.BAR_WIDTH + 4)
+    decayGlow:SetWidth(self.BAR_WIDTH)
     decayGlow:SetHeight(4)
     decayGlow:SetAlpha(0.10)
     decayGlow:Hide()
@@ -1252,17 +1191,12 @@ function DM:CreateUI()
     self.decayLine = decayLine
     decayLine:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
     decayLine:SetVertexColor(1.0, 1.0, 1.0)
-    decayLine:SetWidth(self.BAR_WIDTH + 2)
+    decayLine:SetWidth(self.BAR_WIDTH)
     decayLine:SetHeight(2)
     decayLine:Hide()
 
-    local decayNub = f:CreateTexture(nil, "OVERLAY")
-    self.decayNub = decayNub
-    decayNub:SetTexture("Interface\\Buttons\\WHITE8X8")
-    decayNub:SetVertexColor(0.68, 0.68, 0.68)
-    decayNub:SetWidth(4)
-    decayNub:SetHeight(4)
-    decayNub:Hide()
+    -- No external nub/icons: keep the widget narrow.
+    self.decayNub = nil
 end
 
 function DM:InitHooks()
