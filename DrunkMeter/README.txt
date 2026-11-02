@@ -1,4 +1,4 @@
-DrunkMeter 0.6.1
+DrunkMeter 0.6.2
 ================
 
 Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
@@ -6,36 +6,33 @@ Vanilla WoW / OctoWoW addon for tracking estimated drunkenness.
 Features
 --------
 - Tracks confirmed alcohol consumption and potency.
-- Syncs from Blizzard sober/tipsy/drunk/smashed system messages.
+- Failed/cooldown drink attempts do not increase the meter.
+- Uses the 0-256 drunkenness scale and Blizzard sober/tipsy/drunk/smashed state messages.
 - Corrects drunk-distorted hostile enemy levels on the target frame and visible nameplates.
-- Uses a slim textured vertical meter with only DRUNK (grey) and SMASHED (gold) threshold lines.
-- Value and state are displayed below the meter; drink icons and the tipsy/max markers are removed.
-- Automatically estimates decay while you are offline.
-- Nameplate correction is failure-isolated so custom nameplates cannot stop drink tracking or decay.
-- DRUNK/SMASHED threshold lines use a Vanilla-safe solid texture.
-- The white decay ticker sweeps from the top of the full bar to the bottom every 10 seconds.
-- Live decay uses multiple elapsed-time fallbacks to prevent a frozen ticker/value.
+- Automatically estimates decay while offline and resumes the saved partial 10-second phase.
+- Nameplate correction is failure-isolated so it cannot stop drink tracking or decay.
 
-Offline decay
--------------
-DrunkMeter saves the current value, partial 10-second decay progress, a wall-clock timestamp,
-and the current server clock whenever the tracked state changes and on logout. On the next login
-it applies the same -1 per 10 seconds decay to the elapsed offline time and resumes the partial tick.
-
-The calculation uses Lua time() because WoW 1.12 GetGameTime() exposes only server hour/minute and
-no date. Server hour/minute are still stored in the rolling history for diagnostics.
-
-Only the latest 20 offline/state snapshots and latest 200 debug log entries are retained so the
-SavedVariables file stays small.
+0.6.2
+-----
+- Restored the intended 32 px outer / 28 px inner tall meter proportions.
+- Red fill is inset inside a thin border and uses a flat Vanilla-safe solid texture (no gradient).
+- Exactly two static marker lines: DRUNK is grey and SMASHED is gold.
+- White decay ticker is 2 px high and sweeps top-to-bottom across the full bar every 10 seconds.
+- Ticker position is independent of red fill height.
+- Live decay and ticker now share one authoritative decayElapsed phase.
+- Removed chat/system synchronisation resets that could repeatedly restart the phase.
+- Added robust elapsed handling using callback elapsed plus a GetTime() monotonic fallback and sanity checks.
+- Offline recovery runs once and preserves partial phase.
+- Added bounded /drunk debug timer diagnostics for raw/fallback delta, phase, ticks, resets and drinks.
 
 Commands
 --------
 /drunk                 Show current value/state and help.
-/drunk set <0-256>     Manually correct the estimate.
-/drunk reset           Set value to zero.
+/drunk set <0-256>     Manually correct the estimate (resets decay phase).
+/drunk reset           Set value to zero and reset phase.
 /drunk lock            Lock the meter.
 /drunk unlock          Unlock it for dragging.
-/drunk debug           Toggle debug chat output.
+/drunk debug           Toggle bounded timer/debug chat output.
 /drunk clearlog        Clear the SavedVariables debug log.
 /drunk show            Show the meter.
 /drunk hide            Hide the meter.
