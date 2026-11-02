@@ -1,0 +1,94 @@
+name: Build DrunkMeter 0.6.1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fix-0.6.1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply 0.6.1 fixes and package
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile, shutil
+
+          root = Path.cwd()
+          lua_path = root / "DrunkMeter" / "DrunkMeter.lua"
+          toc_path = root / "DrunkMeter" / "DrunkMeter.toc"
+          addon_readme = root / "DrunkMeter" / "README.txt"
+          root_readme = root / "README.md"
+
+          s = lua_path.read_text(encoding="utf-8")
+          s = s.replace("-- DrunkMeter 0.6.0", "-- DrunkMeter 0.6.1", 1)
+          s = s.replace('DM.VERSION = "0.6.0"', 'DM.VERSION = "0.6.1"', 1)
+
+          old_tick = '''function DM:CreateTickAtValue(v, r, g, b)\n    local y = self:GetVisualOffset(v)\n    -- Threshold markers sit entirely inside the bar and span exactly its width.\n    local tick = self.bar:CreateTexture(nil, "OVERLAY")\n    tick:SetTexture("Interface\\\\Buttons\\\\WHITE8X8")\n    tick:SetVertexColor(r or 0.96, g or 0.84, b or 0.48)\n    tick:SetWidth(self.BAR_WIDTH)\n    tick:SetHeight(2)\n    tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)\n    return tick\nend\n'''
+          new_tick = '''function DM:CreateTickAtValue(v, r, g, b)\n    local y = self:GetVisualOffset(v)\n    -- Vanilla-safe solid threshold marker. WHITE8X8 is not reliable on 1.12 clients.\n    local tick = self.bar:CreateTexture(nil, "OVERLAY")\n    tick:SetTexture("Interface\\\\ChatFrame\\\\ChatFrameBackground")\n    tick:SetVertexColor(r or 0.96, g or 0.84, b or 0.48)\n    tick:SetAlpha(1.0)\n    tick:SetWidth(self.BAR_WIDTH)\n    tick:SetHeight(2)\n    tick:SetPoint("CENTER", self.bar, "BOTTOM", 0, y)\n    return tick\nend\n'''
+          if old_tick not in s:
+              raise SystemExit("CreateTickAtValue block not found")
+          s = s.replace(old_tick, new_tick, 1)
+
+          old_ticker_pos = '''    local topY = self:GetVisualOffset(v)\n    local y = topY * (1 - progress)\n'''
+          new_ticker_pos = '''    -- The decay ticker is a clock, not a fill marker: sweep from the top of\n    -- the complete bar to the bottom every DECAY_SECONDS, regardless of fill height.\n    local y = self.BAR_HEIGHT * (1 - progress)\n'''
+          if old_ticker_pos not in s:
+              raise SystemExit("ticker position block not found")
+          s = s.replace(old_ticker_pos, new_ticker_pos, 1)
+
+          old_line_texture = '    decayLine:SetTexture("Interface\\\\TargetingFrame\\\\UI-StatusBar")\n'
+          new_line_texture = '    decayLine:SetTexture("Interface\\\\ChatFrame\\\\ChatFrameBackground")\n'
+          if old_line_texture not in s:
+              raise SystemExit("decay line texture not found")
+          s = s.replace(old_line_texture, new_line_texture, 1)
+
+          old_dt = '''    local dt = tonumber(elapsed) or 0\n    if dt < 0 then dt = 0 end\n'''
+          new_dt = '''    -- Accept the client-supplied elapsed value, but also keep a monotonic\n    -- GetTime fallback so live decay cannot freeze when an OnUpdate argument is absent.\n    local now = GetTime()\n    local dt = tonumber(elapsed)\n    if not dt or dt <= 0 then\n        if self.lastUpdateTime then\n            dt = now - self.lastUpdateTime\n        else\n            dt = 0\n        end\n    end\n    self.lastUpdateTime = now\n    if dt < 0 then dt = 0 end\n'''
+          if old_dt not in s:
+              raise SystemExit("OnUpdate dt block not found")
+          s = s.replace(old_dt, new_dt, 1)
+
+          old_driver = '''driver:SetScript("OnUpdate", function()\n    DM:OnUpdate(arg1)\nend)\n'''
+          new_driver = '''driver:SetScript("OnUpdate", function(a, b)\n    -- Compatible with modern-style (frame, elapsed), single elapsed argument,\n    -- and legacy Vanilla global arg1 script dispatch.\n    local elapsed = tonumber(b) or tonumber(a) or tonumber(arg1)\n    DM:OnUpdate(elapsed)\nend)\n'''
+          if old_driver not in s:
+              raise SystemExit("driver OnUpdate block not found")
+          s = s.replace(old_driver, new_driver, 1)
+
+          lua_path.write_text(s, encoding="utf-8")
+
+          toc = toc_path.read_text(encoding="utf-8").replace("## Version: 0.6.0", "## Version: 0.6.1", 1)
+          toc_path.write_text(toc, encoding="utf-8")
+
+          ar = addon_readme.read_text(encoding="utf-8")
+          ar = ar.replace("DrunkMeter 0.6.0", "DrunkMeter 0.6.1", 1)
+          ar = ar.replace("- Nameplate correction is failure-isolated so custom nameplates cannot stop drink tracking or decay.", "- Nameplate correction is failure-isolated so custom nameplates cannot stop drink tracking or decay.\n- DRUNK/SMASHED threshold lines use a Vanilla-safe solid texture.\n- The white decay ticker sweeps from the top of the full bar to the bottom every 10 seconds.\n- Live decay uses multiple elapsed-time fallbacks to prevent a frozen ticker/value.")
+          addon_readme.write_text(ar, encoding="utf-8")
+
+          rr = root_readme.read_text(encoding="utf-8")
+          rr = rr.replace("## 0.6.0 UI redesign", "## 0.6.1 fixes\n\n- Restored visible DRUNK (grey) and SMASHED (gold) marker lines using a Vanilla-safe texture.\n- White decay ticker now sweeps from the top of the full bar rather than the top of the red fill.\n- Fixed live decay/ticker freezing by accepting all common OnUpdate elapsed argument forms with a GetTime fallback.\n- Login initialisation remains one-time only.\n\n## 0.6.0 UI redesign", 1)
+          rr = rr.replace("DrunkMeter-0.6.0.zip", "DrunkMeter-0.6.1.zip")
+          rr = rr.replace("Current version: **0.6.0**", "Current version: **0.6.1**")
+          root_readme.write_text(rr, encoding="utf-8")
+
+          out = root / "DrunkMeter-0.6.1.zip"
+          if out.exists(): out.unlink()
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              for path in (root / "DrunkMeter").rglob("*"):
+                  if path.is_file():
+                      z.write(path, path.relative_to(root))
+
+      - name: Commit build
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DrunkMeter README.md DrunkMeter-0.6.1.zip
+          git rm .github/workflows/fix-0.6.1.yml
+          git commit -m "Fix DrunkMeter ticker, threshold lines and live decay in 0.6.1"
+          git push
